@@ -64,7 +64,6 @@ module RSpotify
       begin
         # Check if we need to wait for rate limit reset
         if @rate_limit_reset_at && Time.current < @rate_limit_reset_at
-          print "Sleeping for #{@rate_limit_reset_at - Time.current} seconds\n"
           sleep_duration = @rate_limit_reset_at - Time.current
           sleep(sleep_duration)
         end
