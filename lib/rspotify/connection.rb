@@ -14,6 +14,7 @@ module RSpotify
   class << self
     attr_accessor :raw_response
     attr_reader :client_token
+    attr_reader :rate_limit_reset_at
 
     # Authenticates access to restricted data. Requires {https://developer.spotify.com/my-applications user credentials}
     #
@@ -61,9 +62,27 @@ module RSpotify
       url << "?#{query}" if query
 
       begin
+        # Check if we need to wait for rate limit reset
+        if @rate_limit_reset_at && Time.current < @rate_limit_reset_at
+          print "Sleeping for #{@rate_limit_reset_at - Time.current} seconds\n"
+          sleep_duration = @rate_limit_reset_at - Time.current
+          sleep(sleep_duration)
+        end
+
         headers = get_headers(params)
         headers['Accept-Language'] = ENV['ACCEPT_LANGUAGE'] if ENV['ACCEPT_LANGUAGE']
         response = RestClient.send(verb, url, *params)
+      rescue RestClient::TooManyRequests => e
+        retry_after = e.response.headers[:retry_after].to_f
+        p "RSpotify: Too Many Requests. Retrying in #{retry_after} seconds"
+
+        # Add a 50ms buffer so that the failed request gets a chance to go first.
+        @rate_limit_reset_at = Time.current + retry_after + 0.05 
+
+        # Wait for the specified time then retry
+        sleep(retry_after)
+        retry
+
       rescue RestClient::Unauthorized => e
         raise e if request_was_user_authenticated?(*params)
 
