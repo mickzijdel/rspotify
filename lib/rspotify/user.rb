@@ -38,15 +38,27 @@ module RSpotify
       response = RestClient.post(TOKEN_URI, request_body, RSpotify.send(:auth_header))
       response = JSON.parse(response)
       @@users_credentials[user_id]['token'] = response['access_token']
+      # Spotify may rotate the refresh token on use. Keep the newest one, or the
+      # *next* refresh replays a spent token and fails with invalid_grant.
+      new_refresh_token = response['refresh_token']
+      @@users_credentials[user_id]['refresh_token'] = new_refresh_token if new_refresh_token
       access_refresh_proc = @@users_credentials[user_id]['access_refresh_callback']
       # If the access token expires and a new one is granted via the refresh
       # token, then this proc will be called with two parameters:
-      # new_access_token and token_lifetime (in seconds)
+      # new_access_token and token_lifetime (in seconds). A proc that declares a
+      # third parameter additionally receives the refresh token.
       # The purpose is to allow the calling environment to invoke some action,
       # such as persisting the new access token somewhere, when the new token
       # is generated.
       if (access_refresh_proc.respond_to? :call)
-        access_refresh_proc.call(response['access_token'], response['expires_in'])
+        # A callback declaring a third parameter also receives the (possibly
+        # rotated) refresh token, so it can be persisted. Two-parameter
+        # callbacks are called exactly as before.
+        if access_refresh_proc.arity < 0 || access_refresh_proc.arity >= 3
+          access_refresh_proc.call(response['access_token'], response['expires_in'], new_refresh_token)
+        else
+          access_refresh_proc.call(response['access_token'], response['expires_in'])
+        end
       end
     rescue RestClient::BadRequest => e
       raise e if e.response !~ /Refresh token revoked/
@@ -78,7 +90,11 @@ module RSpotify
       RSpotify.send(:send_request, verb, path, *params)
 
     rescue RestClient::Exception => e
-      raise e if e.response !~ /access token expired/
+      # Refresh on any 401. Spotify's 401 body is not a stable contract: the
+      # wording changed from "The access token expired" to
+      # "Missing/invalid/expired access token" in July 2026, and matching on it
+      # silently disabled token refresh for every user of this gem.
+      raise e unless e.http_code == 401
       refresh_token(user_id)
       params[-1] = oauth_header(user_id).merge(custom_headers)
       RSpotify.send(:send_request, verb, path, *params)
